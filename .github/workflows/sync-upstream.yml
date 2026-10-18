@@ -1,23 +1,46 @@
-name: Sync upstream
+name: Sync and deploy
 on:
   schedule:
     - cron: '0 19 * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  sync:
+  sync-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Merge upstream
+        id: sync
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/shuaiplus/NodeWarden.git
+          git remote add upstream https://github.com/shuaiplus/NodeWarden.git || true
           git fetch upstream
           git checkout main
-          git merge --no-edit upstream/main
-          git push origin main
+          BEFORE=$(git rev-parse HEAD)
+          git merge --no-edit upstream/main || true
+          AFTER=$(git rev-parse HEAD)
+          git push origin main || true
+          if [ "$BEFORE" != "$AFTER" ] || [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Setup Node.js
+        if: steps.sync.outputs.deploy == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install, build and deploy to Cloudflare
+        if: steps.sync.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npm install --legacy-peer-deps
+          npm run deploy:kv
